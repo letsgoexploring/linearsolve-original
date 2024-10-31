@@ -11,7 +11,7 @@ class model:
     '''Defines a class -- linearsolve.model -- with associated methods for solving and simulating dynamic 
     stochastic general equilibrium (DSGE) models.'''
 
-    def __init__(self,equations=None,n_states=None,n_exo_states=None,var_names=None,shock_names=None,parameters=None):
+    def __init__(self,equations=None,var_names=None,state_vars=None,exo_state_vars=None,shock_names=None,parameters=None,shock_prefix=None,n_states=None,n_exo_states=None):
         
         '''Initializing an instance linearsolve.model requires values for the following variables:
 
@@ -24,16 +24,22 @@ class model:
                                     The function should return an n-dimensional array with each element of 
                                     the returned array being equaling an equilibrium condition of the model 
                                     solved for zero. 
-            n_states:           (int) The number of state variables in the model.
-            n_exo_states:       (int) The number of state variables with exogenous shocks. If None, then it's assumed
-                                    that all state variables have exogenous shocks. Default: None
             var_names:          (list) A list of strings with the names of the endogenous variables. The 
                                     state variables with exogenous shocks must be ordered first, followed by state
                                     variables without exogenous shocks, followed by control variables. E.g., for a 
                                     3-variables RBC model, var_names = ['a','k','c']
+            state_vars:         (list or str) A list of the state variables of the model. May be a string if only
+                                    one state variable.
+            exo_state_vars:     (list or str) A list of the state variables of the models that have exogenous shocks.
+                                    May be a string if only one exogenous state variable.
             shock_names:        (list) A list of strings with the names of the exogenous shocks to each state
                                     variable. The order of names must agree with the relevant elements of var_names.
+            n_states:           (int) The number of state variables in the model.
+            n_exo_states:       (int) The number of state variables with exogenous shocks. If None, then it's assumed
+                                    that all state variables have exogenous shocks. Default: None
             parameters:         (Pandas Series) Pandas Series object with parameter name strings as the index.
+            shock_prefix:       (str) By default shocks are named 'e_[var1]', 'e_[var2]', etc. Change the prefix 'e_'
+                                    with this parameter or set the shock_names parameter to avoid prefixes altogether.
 
         Returns:
             None
@@ -50,38 +56,65 @@ class model:
             parameters:         (Pandas Series) A Pandas Series with parameter name strings as the 
                                     index.
         '''
+        var_names = np.r_[var_names]
+        
+        if state_vars is not None:
+            state_vars = np.array([state_vars]).flatten()
+            self.n_states = len(state_vars)
+
+        else:
+            self.n_states = n_states
+            state_vars = var_names[:self.n_states]
+            
+        if exo_state_vars is not None:
+            exo_state_vars = np.array([exo_state_vars]).flatten()
+            self.n_exo_states = len(exo_state_vars)
+
+        else:
+            if n_exo_states is not None:
+                self.n_exo_states = n_exo_states
+            else:
+                self.n_exo_states = self.n_states
+            exo_state_vars = state_vars[:self.n_exo_states]
+
         
         self.equilibrium_fun= equations
         self.n_vars = len(var_names)
-        self.n_states = n_states
-        self.n_exo_states = n_exo_states or n_states
-        self.n_endo_states = n_states - n_exo_states
-        self.n_costates=self.n_vars-n_states
+        self.n_endo_states = self.n_states - self.n_exo_states
+        self.n_costates=self.n_vars-self.n_states
         self.parameters = parameters
 
         names = {}
 
-        names['variables'] = var_names
-        
-        names['shocks'] = shock_names or ['e_'+var_names[i] for i in range(self.n_exo_states)]
+        names['variables'] = np.r_[exo_state_vars,state_vars[~np.isin(state_vars,exo_state_vars)],var_names[~np.isin(var_names,state_vars)]]
+
+        if shock_names is not None:
+
+            names['shocks'] = shock_names
+            
+        else:
+            if shock_prefix is None:
+                shock_prefix = 'e_'
+            
+            names['shocks'] = np.array([shock_prefix+names['variables'][i] for i in range(self.n_exo_states)])
         
         if len(names['shocks']) != self.n_exo_states:
             raise Exception('Length of shock_names doesn\'t match number of exogenous states')
         
-        names['param'] = list(self.parameters.index)
+        names['param'] = parameters.index.values
         
         self.names = names
 
     # Methods
 
-    def approximate_and_solve(self,log_linear=True,eigenvalue_warnings=True):
+    def approximate_and_solve(self,log_linear=False,eigenvalue_warnings=True):
 
         '''Method approximates and solves a dynamic stochastic general equilibrium (DSGE) model by 
-        constructing the log-linear approximation (if the model isn't log-linear) and solving the model
+        constructing the linear or log-linear approximation and solving the model
         using Klein's (2000) method.
 
         Args:
-            log_linear:             (bool) Whether to compute log-linear or linear approximation. Default: True
+            log_linear:             (bool) Whether to compute log-linear or linear approximation. Default: False
             eigenvalue_warnings:    (bool) Whether to print warnings that there are too many or few eigenvalues. Default: True
 
         Returns:
@@ -336,7 +369,7 @@ class model:
         self.ss = pd.Series(steady_state,index=self.names['variables'])
 
 
-    def impulse(self,T=51,t0=1,shocks=None,percent=False,diff=True):
+    def impulse(self,T=51,t0=1,shocks=None,percent=False,center=True):
 
         '''Computes impulse responses for shocks to each state variable.
 
@@ -349,7 +382,7 @@ class model:
                                 log_linear==False, shocks is set to a vector of 1s. Default = None
                 percent:    (bool) Whether to multiply simulated values by 100. Only works for log-linear 
                                 approximations. Default: False
-                diff:       (bool) Subtract steady state for linear approximations (or log steady state for 
+                center:   (bool) Subtract steady state for linear approximations (or log steady state for 
                                 log-linear approximations). Default: True
         
         Returns
@@ -395,7 +428,7 @@ class model:
 
             frameDict = {self.names['shocks'][j]:eps.T[j]}
             for i,endoName in enumerate(self.names['variables']):
-                if diff:
+                if center:
                     frameDict[endoName] = x[i]
                 else:
                     if not self.log_linear:
@@ -740,21 +773,25 @@ class model:
         return lines
     
 
-    def stoch_sim(self,T=51,drop_first=300,cov_mat=None,seed=None,percent=False,diff=True):
+    def stoch_sim(self,T=51,drop_first=300,covariance_matrix=None,variances=None,seed=None,percent=False,center=True):
         
         '''Computes a stohcastic simulation of the model.
 
         Arguments:
-                T:          (int) Number of periods to simulate. Default: 51
-                drop_first: (int) Number of periods to simulate before generating the simulated periods. 
+                T:                  (int) Number of periods to simulate. Default: 51
+                drop_first:         (int) Number of periods to simulate before generating the simulated periods. 
                                 Default: 300
-                cov_mat:    (list or Numpy.ndarray) Covariance matrix shocks. If not given, exogenous shock
-                                standard deviations are set to 0.01.
-                seed:       (int) Sets the seed for the Numpy random number generator. Default: None
-                percent:    (bool) Whether to multiply simulated values by 100. Only works for log-linear 
-                                approximations. Default: False
-                diff:       (bool) Subtract steady state for linear approximations (or log steady state for 
-                                log-linear approximations). Default: True
+                covariance_matrix:  (list or Numpy.ndarray) Covariance matrix shocks. If there is only one shock,
+                                        either a number or 1-d array may be supplied. If not given, exogenous
+                                        shock standard deviations are set to 0.01.
+                variances           (list or Numpy.ndarray) The variances of the exogenous shocks. Will be used to 
+                                        form the covariance matrix. If variances and covariance_matrix are both
+                                        supplied, the latter will take precendence.
+                seed:               (int) Sets the seed for the Numpy random number generator. Default: None
+                percent:            (bool) Whether to multiply simulated values by 100. Only works for log-linear 
+                                        approximations. Default: False
+                center:             (bool) Subtract steady state for linear approximations (or log steady state for 
+                                        log-linear approximations). Default: True
         
         Returns
             None
@@ -771,17 +808,18 @@ class model:
         # Initialize states
         s0 = np.zeros([1,n_states])
 
-        # Set cov_mat if not given
-        if cov_mat is None:
-            cov_mat = np.array(self.n_exo_states*[0.01**2])
-        cov_mat = np.array(cov_mat)
+        # Set covariance_matrix if not given
+        if covariance_matrix is not None:
+            covariance_matrix = np.atleast_2d(covariance_matrix)
 
+        elif variances is not None:
+            covariance_matrix = np.diag(np.r_[variances])
 
-        if cov_mat.ndim==1:
-            cov_mat = np.array([cov_mat])
+        else:
+            covariance_matrix = np.array(self.n_exo_states*[0.01**2])
             
-            if len(cov_mat) != self.n_exo_states:
-                raise Exception('Length of cov_mat doesn\'t match number of exogenous states')
+        if len(covariance_matrix) != self.n_exo_states:
+            raise Exception('Length of covariance_matrix doesn\'t match number of exogenous states')
 
         # Set seed for the Numpy random number generator
         if seed is not None and type(seed)==int:
@@ -790,7 +828,7 @@ class model:
 
         # Simulate shocks
         eps = np.zeros([drop_first+T,n_states])
-        eps[:,:len(cov_mat)] = np.random.multivariate_normal(mean=np.zeros(len(cov_mat)),cov=cov_mat,size=[drop_first+T])
+        eps[:,:len(covariance_matrix)] = np.random.multivariate_normal(mean=np.zeros(len(covariance_matrix)),cov=covariance_matrix,size=[drop_first+T])
 
         # Compute impulse responses given shocks
         x = ir(self.f,self.p,eps,s0)
@@ -800,7 +838,7 @@ class model:
         for j,exoName in enumerate(self.names['shocks']):
             frameDict[exoName] = eps.T[j][drop_first:]
         for i,endoName in enumerate(self.names['variables']):
-            if diff:
+            if center:
                 frameDict[endoName] = x[i][drop_first:]
             else:
                 frameDict[endoName] = x[i][drop_first:] + self.ss[endoName]
@@ -811,7 +849,6 @@ class model:
 
         # Assign attribute
         self.simulated = simFrame
-
     
 
 
