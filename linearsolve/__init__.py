@@ -1,8 +1,8 @@
-from __future__ import division,print_function
 import numpy as np
 import scipy.linalg as la
 from statsmodels.tools.numdiff import approx_fprime_cs, approx_fprime
 from scipy.optimize import root,fsolve,broyden1,broyden2
+import warnings
 import pandas as pd
 import sys
 
@@ -11,7 +11,7 @@ class model:
     '''Defines a class -- linearsolve.model -- with associated methods for solving and simulating dynamic 
     stochastic general equilibrium (DSGE) models.'''
 
-    def __init__(self,equations=None,var_names=None,state_vars=None,exo_state_vars=None,shock_names=None,parameters=None,shock_prefix=None,n_states=None,n_exo_states=None):
+    def __init__(self,equations=None,variables=None,costates=None,states=None,exo_states=None,endo_states=None,shock_names=None,parameters=None,shock_prefix=None,n_states=None,n_exo_states=None):
         
         '''Initializing an instance linearsolve.model requires values for the following variables:
 
@@ -24,14 +24,18 @@ class model:
                                     The function should return an n-dimensional array with each element of 
                                     the returned array being equaling an equilibrium condition of the model 
                                     solved for zero. 
-            var_names:          (list) A list of strings with the names of the endogenous variables. The 
+            variables:          (list) A list of strings with the names of the endogenous variables. The 
                                     state variables with exogenous shocks must be ordered first, followed by state
                                     variables without exogenous shocks, followed by control variables. E.g., for a 
                                     3-variables RBC model, var_names = ['a','k','c']
-            state_vars:         (list or str) A list of the state variables of the model. May be a string if only
+            costates       (list or str) A list of the costate variables of the model. May be a string if only
+                                    one costate variable.
+            states:         (list or str) A list of the state variables of the model. May be a string if only
                                     one state variable.
-            exo_state_vars:     (list or str) A list of the state variables of the models that have exogenous shocks.
+            exo_states:     (list or str) A list of the state variables of the models that have exogenous shocks.
                                     May be a string if only one exogenous state variable.
+            endo_states:     (list or str) A list of the state variables of the models that do not have exogenous shocks.
+                                    May be a string if only one endogenous state variable.
             shock_names:        (list) A list of strings with the names of the exogenous shocks to each state
                                     variable. The order of names must agree with the relevant elements of var_names.
             n_states:           (int) The number of state variables in the model.
@@ -45,48 +49,170 @@ class model:
             None
 
         Attributes:
-            equilibrium_fun:    (fun) Function that returns the equilibrium comditions of the model.
-            n_vars:             (int) The number of variables in the model.
-            n_states:           (int) The number of state variables in the model.
-            n_exo_states:       (int) The number of exogenous state variables.
-            n_endo_states:      (int) The number of endogenous state variables.
-            n_costates:         (int) The number of costate or control variables in the model.
-            names:              (dict) A dictionary with keys 'variables', 'shocks', and 'param' that
-                                    stores the names of the model's variables, shocks, and parameters.
-            parameters:         (Pandas Series) A Pandas Series with parameter name strings as the 
-                                    index.
+            equilibrium_function:   (fun) Function that returns the equilibrium comditions of the model.
+            n_vars:                 (int) The number of variables in the model.
+            n_states:               (int) The number of state variables in the model.
+            n_exo_states:           (int) The number of exogenous state variables.
+            n_endo_states:          (int) The number of endogenous state variables.
+            n_costates:             (int) The number of costate or control variables in the model.
+            names:                  (dict) A dictionary with keys 'variables', 'shocks', and 'param' that
+                                        stores the names of the model's variables, shocks, and parameters.
+            parameters:             (Pandas Series) A Pandas Series with parameter name strings as the 
+                                        index.
         '''
-        var_names = np.r_[var_names]
-        
-        if state_vars is not None:
-            state_vars = np.array([state_vars]).flatten()
-            self.n_states = len(state_vars)
 
-        else:
-            self.n_states = n_states
-            state_vars = var_names[:self.n_states]
-            
-        if exo_state_vars is not None:
-            exo_state_vars = np.array([exo_state_vars]).flatten()
-            self.n_exo_states = len(exo_state_vars)
+        if variables is None:
+            if costates is None:
+                costates = []
+                self.n_costates = 0
 
-        else:
-            if n_exo_states is not None:
-                self.n_exo_states = n_exo_states
             else:
-                self.n_exo_states = self.n_states
-            exo_state_vars = state_vars[:self.n_exo_states]
+                costates = np.array(costates).flatten()
+                self.n_costates = len(costates)
+
+            if states is None:
+                if exo_states is None:
+                    exo_states = []
+                    self.n_exo_states = 0
+
+                else:
+                    exo_states = np.array(exo_states).flatten()
+                    self.n_exo_states = len(exo_states)
+
+                if endo_states is None:
+                    endo_states = []
+                    self.n_endo_states = 0
+
+                else:
+                    endo_states = np.array(endo_states).flatten()
+                    self.n_endo_states = len(endo_states)
+                    
+                states = np.r_[exo_states,endo_states]
+                self.n_states = self.n_endo_states + self.n_exo_states
+                    
+            else:
+                states = np.array(states).flatten()
+                self.n_states = len(states)
+
+                if exo_states is not None:
+                    exo_states = np.array(exo_states).flatten()
+
+                    self.n_exo_states = len(exo_states)
+                    self.n_endo_states = self.n_states - self.n_exo_states
+                    states = np.r_[states[np.isin(states,exo_states)],states[~np.isin(states,exo_states)]]
+
+                elif endo_states is not None:
+                    endo_states = np.array(endo_states).flatten()
+                    
+                        
+                    self.n_endo_states = len(endo_states)
+                    self.n_exo_states = self.n_states - self.n_endo_states
+                    states = np.r_[states[~np.isin(states,endo_states)],states[np.isin(states,endo_states)]]
+
+                else:
+                    self.n_exo_states = self.n_states
+                    self.n_endo_states = self.n_states - self.n_exo_states
+            
+            self.n_vars = self.n_costates+self.n_states
+
+        else:
+            variables = np.array(variables).flatten()
+            self.n_vars = len(variables)
+
+            if states is None and exo_states is None and endo_states is None:
+
+                if n_states is None:
+
+                    if n_exo_states is not None:
+                        self.n_exo_states = n_exo_states
+
+                    else:
+                        self.n_exo_states = 0
+                        
+                    self.n_states = self.n_exo_states
+                    self.n_endo_states = self.n_states - self.n_exo_states
+                    self.n_costates = self.n_vars - self.n_states
+
+                    states = variables[:n_exo_states]
+                    exo_states = variables[n_exo_states:n_states]
+                    costates = variables[n_states:]
+
+
+                else:
+                    
+                    self.n_states = n_states
+
+                    if n_exo_states is not None:
+                        self.n_exo_states = n_exo_states
+
+                    else:
+                        self.n_exo_states = 0
+
+                self.n_endo_states = self.n_states - self.n_exo_states
+                self.n_costates = self.n_vars - self.n_states
+
+                exo_states = variables[:n_exo_states]
+                endo_states = variables[n_exo_states:n_states]
+                states = variables[:n_states]
+                costates = variables[n_states:]
+
+            else:
+                if states is None:
+                    if exo_states is None:
+                        exo_states = []
+                        self.n_exo_states = 0
+    
+                    else:
+                        exo_states = np.array(exo_states).flatten()
+                        self.n_exo_states = len(exo_states)
+    
+                    if endo_states is None:
+                        endo_states = []
+                        self.n_endo_states = 0
+    
+                    else:
+                        endo_states = np.array(endo_states).flatten()
+                        self.n_endo_states = len(endo_states)
+                        
+                    states = np.r_[exo_states,endo_states]
+                    self.n_states = self.n_endo_states + self.n_exo_states
+                        
+                else:
+                    states = np.array(states).flatten()
+                    self.n_states = len(states)
+    
+                    if exo_states is not None:
+                        exo_states = np.array(exo_states).flatten()
+                        self.n_exo_states = len(exo_states)
+                        self.n_endo_states = self.n_states - self.n_exo_states
+                        states = np.r_[states[np.isin(states,exo_states)],states[~np.isin(states,exo_states)]]
+    
+                    elif endo_states is not None:
+                        endo_states = np.array(endo_states).flatten()
+                        self.n_endo_states = len(endo_states)
+                        self.n_exo_states = self.n_states - self.n_endo_states
+                        states = np.r_[states[~np.isin(states,endo_states)],states[np.isin(states,endo_states)]]
+    
+                    else:
+                        self.n_exo_states = self.n_states
+                        self.n_endo_states = self.n_states - self.n_exo_states
+                        exo_states = states
+                        endo_states = np.array([])
+
+                self.n_costates = self.n_vars - self.n_states
+
+
+                costates = variables[~np.isin(variables,states)]
 
         
-        self.equilibrium_fun= equations
-        self.n_vars = len(var_names)
-        self.n_endo_states = self.n_states - self.n_exo_states
-        self.n_costates=self.n_vars-self.n_states
+        
+        
+        self.equilibrium_function= equations
         self.parameters = parameters
 
         names = {}
 
-        names['variables'] = np.r_[exo_state_vars,state_vars[~np.isin(state_vars,exo_state_vars)],var_names[~np.isin(var_names,state_vars)]]
+        names['variables'] = np.r_[states,costates].tolist()
 
         if shock_names is not None:
 
@@ -281,7 +407,7 @@ class model:
         '''
 
         try:
-            print(np.isclose(self.equilibrium_fun(self.ss,self.ss,self.parameters),0))
+            print(np.isclose(self.equilibrium_function(self.ss,self.ss,self.parameters),0))
         except:
             print('Set the steady state first.')
 
@@ -324,7 +450,7 @@ class model:
 
             variables = pd.Series(variables,index = self.names['variables'])
 
-            return self.equilibrium_fun(variables,variables,self.parameters)
+            return self.equilibrium_function(variables,variables,self.parameters)
         
         def real_ss_fun(variables_transformed):
 
@@ -369,7 +495,7 @@ class model:
         self.ss = pd.Series(steady_state,index=self.names['variables'])
 
 
-    def impulse(self,T=51,t0=1,shocks=None,percent=False,center=True):
+    def impulse(self,T=51,t0=1,shocks=None,center=True,normalize=True):
 
         '''Computes impulse responses for shocks to each state variable.
 
@@ -380,10 +506,9 @@ class model:
                 shocks:     (list or Numpy array) An (ns x 1) array of shock values. If shocks==None, and 
                                 log_linear==True, shocks is set to a vector of 0.01s. If shocks==None and
                                 log_linear==False, shocks is set to a vector of 1s. Default = None
-                percent:    (bool) Whether to multiply simulated values by 100. Only works for log-linear 
-                                approximations. Default: False
-                center:   (bool) Subtract steady state for linear approximations (or log steady state for 
+                center:     (bool) Subtract steady state for linear approximations (or log steady state for 
                                 log-linear approximations). Default: True
+                normalize:  (bool) Divide simulated data by steady states. Default: True
         
         Returns
             None
@@ -436,10 +561,14 @@ class model:
                     else:
                         frameDict[endoName] = x[i] + np.log(self.ss[endoName])
 
-            irFrame = pd.DataFrame(frameDict,index = np.arange(T))
+            if normalize:
+                shock_ss= pd.Series(data = np.ones(self.n_exo_states),index = self.names['shocks'])
 
-            if percent==True and self.log_linear:
-                irFrame = 100*irFrame
+                irFrame = pd.DataFrame(frameDict,index = np.arange(T))//pd.concat([shock_ss,self.ss])
+
+            else:
+                irFrame = pd.DataFrame(frameDict,index = np.arange(T))
+
 
             if shocks is None or len(shocks)>j:
                 irsDict[self.names['shocks'][j]] = irFrame
@@ -490,7 +619,7 @@ class model:
             vars_fwd = pd.Series(vars_fwd,index = self.names['variables'])
             vars_cur = pd.Series(vars_cur,index = self.names['variables'])
 
-            equilibrium_left = self.equilibrium_fun(vars_fwd,vars_cur,self.parameters)
+            equilibrium_left = self.equilibrium_function(vars_fwd,vars_cur,self.parameters)
             equilibrium_right = np.ones(len(self.names['variables']))
 
             return equilibrium_left - equilibrium_right
@@ -501,14 +630,14 @@ class model:
         if not np.iscomplexobj(self.parameters):
             
             # Assign attributes
-            self.a= approx_fprime_cs(steady_state.ravel(),equilibrium_fwd)
-            self.b= -approx_fprime_cs(steady_state.ravel(),equilibrium_cur)
+            self.a= approx_fprime_cs(steady_state.to_numpy(),equilibrium_fwd)
+            self.b= -approx_fprime_cs(steady_state.to_numpy(),equilibrium_cur)
 
         else:
 
             # Assign attributes
-            self.a= approx_fprime(steady_state.ravel(),equilibrium_fwd)
-            self.b= -approx_fprime(steady_state.ravel(),equilibrium_cur)
+            self.a= approx_fprime(steady_state.to_numpy(),equilibrium_fwd)
+            self.b= -approx_fprime(steady_state.to_numpy(),equilibrium_cur)
 
 
     def log_linear_approximation(self,steady_state=None):
@@ -553,7 +682,7 @@ class model:
             log_vars_fwd = pd.Series(log_vars_fwd,index = self.names['variables'])
             log_vars_cur = pd.Series(log_vars_cur,index = self.names['variables'])
 
-            equilibrium_left = self.equilibrium_fun(np.exp(log_vars_fwd),np.exp(log_vars_cur),self.parameters)+1
+            equilibrium_left = self.equilibrium_function(np.exp(log_vars_fwd),np.exp(log_vars_cur),self.parameters)+1
             equilibrium_right = np.ones(len(self.names['variables']))
 
             return np.log(equilibrium_left) - np.log(equilibrium_right)
@@ -773,7 +902,7 @@ class model:
         return lines
     
 
-    def stoch_sim(self,T=51,drop_first=300,covariance_matrix=None,variances=None,seed=None,percent=False,center=True):
+    def stoch_sim(self,T=51,drop_first=300,covariance_matrix=None,variances=None,seed=None,center=True,normalize=True):
         
         '''Computes a stohcastic simulation of the model.
 
@@ -788,10 +917,9 @@ class model:
                                         form the covariance matrix. If variances and covariance_matrix are both
                                         supplied, the latter will take precendence.
                 seed:               (int) Sets the seed for the Numpy random number generator. Default: None
-                percent:            (bool) Whether to multiply simulated values by 100. Only works for log-linear 
-                                        approximations. Default: False
                 center:             (bool) Subtract steady state for linear approximations (or log steady state for 
                                         log-linear approximations). Default: True
+                normalize:          (bool) Divide simulated data by steady states. Default: True
         
         Returns
             None
@@ -844,8 +972,14 @@ class model:
                 frameDict[endoName] = x[i][drop_first:] + self.ss[endoName]
 
         simFrame = pd.DataFrame(frameDict,index = np.arange(T))
-        if percent==True:
-            simFrame = 100*simFrame
+
+        if normalize:
+            shock_ss= pd.Series(data = np.ones(self.n_exo_states),index = self.names['shocks'])
+            simFrame = pd.DataFrame(frameDict,index = np.arange(T))/pd.concat([shock_ss,self.ss])
+
+        else:
+            simFrame = pd.DataFrame(frameDict,index = np.arange(T))
+
 
         # Assign attribute
         self.simulated = simFrame
