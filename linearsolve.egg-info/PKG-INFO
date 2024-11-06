@@ -1,9 +1,9 @@
 Metadata-Version: 2.1
 Name: linearsolve
-Version: 3.5.5
+Version: 3.6.1
 Summary: A module for approximating, solving, and simulating dynamic stochastic general equilibrium (DSGE) models
 Home-page: https://github.com/letsgoexploring/linearsolve-package
-Download-URL: https://github.com/letsgoexploring/linearsolve/raw/refs/heads/gh-pages/dist/linearsolve-3.5.5.tar.gz
+Download-URL: https://github.com/letsgoexploring/linearsolve/raw/refs/heads/gh-pages/dist/linearsolve-3.6.1.tar.gz
 Author: Brian C. Jenkins
 Author-email: bcjenkin@uci.edu
 Keywords: economics,solution,dsge,schur,macroconomics,rbc,new keynesian,business cycles

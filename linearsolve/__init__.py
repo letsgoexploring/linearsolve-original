@@ -49,7 +49,7 @@ class model:
             None
 
         Attributes:
-            equilibrium_function:   (fun) Function that returns the equilibrium comditions of the model.
+            equations:   (fun) Function that returns the equilibrium comditions of the model.
             n_vars:                 (int) The number of variables in the model.
             n_states:               (int) The number of state variables in the model.
             n_exo_states:           (int) The number of exogenous state variables.
@@ -207,7 +207,7 @@ class model:
         
         
         
-        self.equilibrium_function= equations
+        self.equations= equations
         self.parameters = parameters
 
         names = {}
@@ -407,7 +407,7 @@ class model:
         '''
 
         try:
-            print(np.isclose(self.equilibrium_function(self.ss,self.ss,self.parameters),0))
+            print(np.isclose(self.equations(self.ss,self.ss,self.parameters),0))
         except:
             print('Set the steady state first.')
 
@@ -450,7 +450,7 @@ class model:
 
             variables = pd.Series(variables,index = self.names['variables'])
 
-            return self.equilibrium_function(variables,variables,self.parameters)
+            return self.equations(variables,variables,self.parameters)
         
         def real_ss_fun(variables_transformed):
 
@@ -503,12 +503,13 @@ class model:
                 T:          (int) Number of periods to simulate. Default: 51
                 t0:         (int) Period in which the shocks are realized. Must be greater than or equal to 
                                 0. Default: 1
-                shocks:     (list or Numpy array) An (ns x 1) array of shock values. If shocks==None, and 
-                                log_linear==True, shocks is set to a vector of 0.01s. If shocks==None and
-                                log_linear==False, shocks is set to a vector of 1s. Default = None
+                shocks:     (dict Pandas Series, list or Numpy array) Which shocks to compute impulse responses fror and values
+                                If shocks==None shocks
+                                is set to a vector of 0.01s. Default = None
                 center:     (bool) Subtract steady state for linear approximations (or log steady state for 
                                 log-linear approximations). Default: True
-                normalize:  (bool) Divide simulated data by steady states. Default: True
+                normalize:  (bool) Divide simulated data by steady states. Ignored if self.log_linear==True or if 
+                                        self.ss contains zeros. Default: True if log_linear==False
         
         Returns
             None
@@ -518,63 +519,64 @@ class model:
                         self.irs['shock name']['endog var name']
 
         '''
+        if normalize and np.any(np.isclose(self.ss,0)):
+
+            normalize=False
+            warnings.warn('Steady state contains zeros so normalize set to False. Set normalize=False to remove this warning.',stacklevel=2)
 
         # Initialize dictionary
-        irsDict = {}
+        irs_dict = {}
 
-        # Set numbers of costate and state variables
-        n_costates = self.n_costates
-        n_states = self.n_states
-        
-        # iterate over all shocks, compute impulse responses, and add results to dictionary
-        for j,name in enumerate(self.names['shocks']):
+        # Manage shocks
+        if isinstance(shocks, pd.Series) or isinstance(shocks, dict):
 
-            s0 = np.zeros([1,n_states])
-            eps= np.zeros([T,n_states])
-            if shocks is not None:
-                try:
-                    eps[t0][j] = shocks[name]
-                except:
-                    try:
-                        eps[t0][j] = shocks[j]
-                    except:
-                        if self.log_linear:
-                            eps[t0][j] = 0.01
-                        else:
-                            eps[t0][j] = 1
+            if isinstance(shocks, dict):
+                shocks = pd.Series(shocks)
 
-            else:
-                if self.log_linear:
-                    eps[t0][j] = 0.01
-                else:
-                    eps[t0][j] = 1
+            for shock_name in shocks.keys():
+
+                if shock_name not in self.names['shocks']:
+                    warnings.warn(shock_name+' is not in self.names[\'shocks\']',stacklevel=2)
+            
+        elif shocks is None:
+
+            shocks = pd.Series(0.01,index= self.names['shocks'])
+
+        else:
+
+            if len(shocks)!=self.n_exo_states:
+                warnings.warn('Length of shocks does not equalself.n_exo_states',stacklevel=2)
+
+            n_shocks_for_irs = np.min([len(shocks),self.n_exo_states])
+            shocks = pd.Series(shocks[:n_shocks_for_irs],index = self.names['shocks'][:n_shocks_for_irs])
+
+        for j,shock_name in enumerate(shocks.index):
+
+            s0 = np.zeros([1,self.n_states])
+            eps= np.zeros([T,self.n_states])
+
+            eps[t0][j] = shocks[shock_name]
 
             x = ir(self.f,self.p,eps,s0)
 
-            frameDict = {self.names['shocks'][j]:eps.T[j]}
-            for i,endoName in enumerate(self.names['variables']):
-                if center:
-                    frameDict[endoName] = x[i]
-                else:
-                    if not self.log_linear:
-                        frameDict[endoName] = x[i] + self.ss[endoName]
-                    else:
-                        frameDict[endoName] = x[i] + np.log(self.ss[endoName])
-
-            if normalize:
-                shock_ss= pd.Series(data = np.ones(self.n_exo_states),index = self.names['shocks'])
-
-                irFrame = pd.DataFrame(frameDict,index = np.arange(T))//pd.concat([shock_ss,self.ss])
-
+            if center:
+                simulated_data = pd.DataFrame(x.T,columns = self.names['variables'])
+            
             else:
-                irFrame = pd.DataFrame(frameDict,index = np.arange(T))
+                if not self.log_linear:
+                    simulated_data = pd.DataFrame(x.T,columns = self.names['variables']) + self.ss
+            
+                else:
+                    simulated_data = pd.DataFrame(x.T,columns = self.names['variables']) + np.log(self.ss)
+                
+            if normalize and not self.log_linear:
+                simulated_data = simulated_data/self.ss
+            
+            simulated_data = pd.concat([pd.Series(eps.T[j],name=shock_name),simulated_data],axis=1)
 
+            irs_dict[shock_name] = simulated_data
 
-            if shocks is None or len(shocks)>j:
-                irsDict[self.names['shocks'][j]] = irFrame
-
-        # Set attribute
-        self.irs = irsDict
+        self.irs = irs_dict
 
 
     def linear_approximation(self,steady_state=None):
@@ -619,7 +621,7 @@ class model:
             vars_fwd = pd.Series(vars_fwd,index = self.names['variables'])
             vars_cur = pd.Series(vars_cur,index = self.names['variables'])
 
-            equilibrium_left = self.equilibrium_function(vars_fwd,vars_cur,self.parameters)
+            equilibrium_left = self.equations(vars_fwd,vars_cur,self.parameters)
             equilibrium_right = np.ones(len(self.names['variables']))
 
             return equilibrium_left - equilibrium_right
@@ -682,7 +684,7 @@ class model:
             log_vars_fwd = pd.Series(log_vars_fwd,index = self.names['variables'])
             log_vars_cur = pd.Series(log_vars_cur,index = self.names['variables'])
 
-            equilibrium_left = self.equilibrium_function(np.exp(log_vars_fwd),np.exp(log_vars_cur),self.parameters)+1
+            equilibrium_left = self.equations(np.exp(log_vars_fwd),np.exp(log_vars_cur),self.parameters)+1
             equilibrium_right = np.ones(len(self.names['variables']))
 
             return np.log(equilibrium_left) - np.log(equilibrium_right)
@@ -919,7 +921,8 @@ class model:
                 seed:               (int) Sets the seed for the Numpy random number generator. Default: None
                 center:             (bool) Subtract steady state for linear approximations (or log steady state for 
                                         log-linear approximations). Default: True
-                normalize:          (bool) Divide simulated data by steady states. Default: True
+                normalize:  (bool) Divide simulated data by steady states. Ignored if self.log_linear==True or if 
+                                        self.ss contains zeros. Default: True if log_linear==False
         
         Returns
             None
@@ -929,12 +932,13 @@ class model:
 
         '''
 
-        # Set numbers of costate and state variables
-        n_costates = self.n_costates
-        n_states = self.n_states
+        if normalize and np.any(np.isclose(self.ss,0)):
+
+            normalize=False
+            warnings.warn('Steady state contains zeros so normalize set to False. Set normalize=False to remove this warning.',stacklevel=2)
 
         # Initialize states
-        s0 = np.zeros([1,n_states])
+        s0 = np.zeros([1,self.n_states])
 
         # Set covariance_matrix if not given
         if covariance_matrix is not None:
@@ -944,46 +948,43 @@ class model:
             covariance_matrix = np.diag(np.r_[variances])
 
         else:
-            covariance_matrix = np.array(self.n_exo_states*[0.01**2])
+            covariance_matrix = np.diag(self.n_exo_states*[0.01**2])
             
         if len(covariance_matrix) != self.n_exo_states:
             raise Exception('Length of covariance_matrix doesn\'t match number of exogenous states')
 
         # Set seed for the Numpy random number generator
-        if seed is not None and type(seed)==int:
+        if seed is None:
+            rng = np.random.default_rng()
 
-            np.random.seed(seed)
+        else:
+            rng = np.random.default_rng(seed=seed)
+            
 
         # Simulate shocks
-        eps = np.zeros([drop_first+T,n_states])
-        eps[:,:len(covariance_matrix)] = np.random.multivariate_normal(mean=np.zeros(len(covariance_matrix)),cov=covariance_matrix,size=[drop_first+T])
+        eps = np.zeros([drop_first+T,self.n_states])
+        eps[:,:len(covariance_matrix)] = rng.multivariate_normal(mean=np.zeros(len(covariance_matrix)),cov=covariance_matrix,size=[drop_first+T])
 
-        # Compute impulse responses given shocks
+        # Compute responses given shocks
         x = ir(self.f,self.p,eps,s0)
 
         # Construct DataFrame
-        frameDict = {}
-        for j,exoName in enumerate(self.names['shocks']):
-            frameDict[exoName] = eps.T[j][drop_first:]
-        for i,endoName in enumerate(self.names['variables']):
-            if center:
-                frameDict[endoName] = x[i][drop_first:]
-            else:
-                frameDict[endoName] = x[i][drop_first:] + self.ss[endoName]
-
-        simFrame = pd.DataFrame(frameDict,index = np.arange(T))
-
-        if normalize:
-            shock_ss= pd.Series(data = np.ones(self.n_exo_states),index = self.names['shocks'])
-            simFrame = pd.DataFrame(frameDict,index = np.arange(T))/pd.concat([shock_ss,self.ss])
+        if center:
+            simulated_data = pd.DataFrame(x.T[drop_first:],columns = self.names['variables'])
 
         else:
-            simFrame = pd.DataFrame(frameDict,index = np.arange(T))
+            if not self.log_linear:
+                simulated_data = pd.DataFrame(x.T[drop_first:],columns = self.names['variables']) + self.ss
 
+            else:
+                simulated_data = pd.DataFrame(x.T[drop_first:],columns = self.names['variables']) + np.log(self.ss)
+            
+        if normalize and not self.log_linear:
+            simulated_data = simulated_data/self.ss
 
-        # Assign attribute
-        self.simulated = simFrame
-    
+        simulated_data = pd.concat([pd.DataFrame(eps[drop_first:,:self.n_exo_states],columns = self.names['shocks']),simulated_data],axis=1)
+
+        self.simulated = simulated_data
 
 
 ### End of model class ####################################################################################
@@ -1094,7 +1095,7 @@ def klein(a=None,b=None,c=None,phi=None,n_states=None,eigenvalue_warnings=True):
     
     if n_states>0:
         if np.linalg.matrix_rank(z11)<n_states:
-            sys.exit("Invertibility condition violated.")
+            sys.exit("Invertibility condition violated. Check model equations or parameter values.")
 
     s11 = s[0:n_states,0:n_states];
     if n_states>0:
@@ -1119,13 +1120,13 @@ def klein(a=None,b=None,c=None,phi=None,n_states=None,eigenvalue_warnings=True):
     if n_states>0:
         if np.abs(t[n_states-1,n_states-1])>np.abs(s[n_states-1,n_states-1]):
             if eigenvalue_warnings:
-                print('Warning: Too few stable eigenvalues.')
+                print('Warning: Too few stable eigenvalues. Check model equations or parameter values.')
             stab = -1
 
     if n_states<n_states+n_costates:
         if np.abs(t[n_states,n_states])<np.abs(s[n_states,n_states]):
             if eigenvalue_warnings:
-                print('Warning: Too many stable eigenvalues.')
+                print('Warning: Too many stable eigenvalues. Check model equations or parameter values.')
             stab = 1
 
     # Compute the generalized eigenvalues
