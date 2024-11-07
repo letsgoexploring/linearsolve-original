@@ -441,7 +441,10 @@ class model:
         if guess is None:
             guess = np.ones(self.n_vars)
         else:
-            if isinstance(guess, list):
+            if isinstance(guess,pd.Series):
+                guess = guess.loc[self.names['variables']]
+
+            elif isinstance(guess, list):
                 guess = np.array(guess)
 
 
